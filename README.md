@@ -1,6 +1,6 @@
 # DomainSurvivor
 
-**DomainSurvivor** is a fast, multithreaded domain scanner that identifies live domains. It checks if domains respond to HTTP or HTTPS requests, regardless of the response code, and logs the active ones.
+**DomainSurvivor** is a fast, multithreaded domain scanner that identifies live domains. It can check for alive domains, match specific HTTP status codes, and compare response similarity against a baseline for added filtering precision.
 
 Pair it with the **[RoundRobinizer](https://github.com/Victor-Security/RoundRobinizer)** script for balanced domain inputs and optimal scanning results.
 
@@ -9,9 +9,10 @@ Pair it with the **[RoundRobinizer](https://github.com/Victor-Security/RoundRobi
 ## Features
 
 - **Fast and Efficient**: Uses multithreading for concurrent scanning.
-- **Customizable**: Adjust the number of workers and timeout via command-line options.
-- **Simple Output**: Logs live domains to a specified output file.
-- **Flexible**: Detects live domains regardless of the HTTP response code.
+- **Customizable**: Adjust the number of workers, timeout, and response evaluation criteria via command-line options.
+- **Baseline Comparison**: Optionally compare responses to a baseline to filter false positives.
+- **Flexible**: Supports detection of live domains or domains matching specific HTTP status codes.
+- **Detailed Output**: Logs domains that meet the specified criteria to an output file.
 
 ---
 
@@ -24,13 +25,13 @@ Pair it with the **[RoundRobinizer](https://github.com/Victor-Security/RoundRobi
 ### Building DomainSurvivor
 
 1. Clone the repository:
-   ```
+   ```bash
    git clone https://github.com/Victor-Security/DomainSurvivor.git
    cd DomainSurvivor
    ```
 
 2. Build the binary:
-   ```
+   ```bash
    go build -o DomainSurvivor
    ```
 
@@ -46,33 +47,37 @@ Pair it with the **[RoundRobinizer](https://github.com/Victor-Security/RoundRobi
 ### Command-Line Options
 
 - `-l <file>`: Input file containing a list of domains (one per line).
-- `-o <file>`: Output file for alive domains.
+- `-o <file>`: Output file for domains matching criteria.
 - `-t <number>`: Number of concurrent workers (default: 100).
 - `-timeout <number>`: Timeout in seconds for each HTTP request (default: 5).
+- `-status <number>`: HTTP status code to match (default: 200).
+- `-alive`: Check for alive domains (any successful response).
+- `-baseline`: Enable baseline comparison to filter false positives.
+- `-threshold <num>`: Baseline similarity threshold (default: 0.9).
 - `-h, --help`: Show the help message and exit.
 
-### Example
+### Examples
 
-1. **Preprocess the Input File**  
-   Use the **[RoundRobinizer](https://github.com/Victor-Security/RoundRobinizer)** script to balance domain inputs:
-   ```
-   python RoundRobinizer.py -i domainlist.txt -o balanced_domains.txt
-   ```
-
-2. **Run DomainSurvivor**  
-   Scan the balanced domain list:
-   ```
-   ./DomainSurvivor -l balanced_domains.txt -o alive_domains.txt -t 200 -timeout 10
+1. **Check for Specific Status Code**
+   ```bash
+   ./DomainSurvivor -l domainlist.txt -o results.txt -t 200 -timeout 10 -status 404
    ```
 
-3. **Results**  
-   The output file (`alive_domains.txt`) will contain all detected live domains.
+2. **Check for Alive Domains**
+   ```bash
+   ./DomainSurvivor -l domainlist.txt -o alivelist.txt -alive
+   ```
+
+3. **Use Baseline Comparison**
+   ```bash
+   ./DomainSurvivor -l domainlist.txt -o filtered.txt -baseline -threshold 0.85
+   ```
 
 ---
 
 ## Example Output
 
-### Input File (`balanced_domains.txt`):
+### Input File (`domainlist.txt`):
 ```
 example.com
 test.com
@@ -81,16 +86,20 @@ nonexistent.example
 ```
 
 ### Command:
-```
-./DomainSurvivor -l balanced_domains.txt -o alive_domains.txt -t 200 -timeout 10
+```bash
+./DomainSurvivor -l domainlist.txt -o alive_domains.txt -t 200 -timeout 10
 ```
 
 ### Console Output:
 ```
+DomainSurvivor: Find the Domains that Survive the Test of Time!
+Effortlessly detect live domains with speed and precision.
+Created by Victor Security (https://victorsecurity.com.br)
+
 Scanning started...
 Using 200 workers with a timeout of 10 seconds per request.
-Alive: example.com
-Alive: google.com
+Match: example.com
+Match: google.com
 Scanning completed. Results saved to alive_domains.txt
 ```
 
@@ -104,12 +113,16 @@ google.com
 
 ## Recommendations
 
-For best results:
-1. **Preprocess with RoundRobinizer**:
+1. **Preprocess with RoundRobinizer**:  
    Balance the input domain list using the **[RoundRobinizer](https://github.com/Victor-Security/RoundRobinizer)** script to ensure a fair distribution of domains across workers.
-2. **Optimize Worker Count**:
+
+2. **Optimize Worker Count**:  
    Adjust the `-t` flag (number of workers) based on your system’s capabilities for optimal performance.
-3. **Adjust Timeout**:
+
+3. **Leverage Baseline Comparison**:  
+   Use the `-baseline` option to filter false positives when scanning large datasets.
+
+4. **Adjust Timeout**:  
    Use the `-timeout` flag to handle slow or distant servers.
 
 ---
