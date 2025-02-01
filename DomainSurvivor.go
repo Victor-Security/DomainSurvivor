@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -14,84 +15,113 @@ import (
 	"github.com/xrash/smetrics"
 )
 
-// Worker function to process hosts
-func worker(jobs <-chan string, results chan<- string, wg *sync.WaitGroup, timeout time.Duration, targetStatusCode int, checkAlive, useBaseline bool, baselineThreshold float64) {
-	defer wg.Done()
-	client := &http.Client{
-		Timeout: timeout,
-	}
-
-	for host := range jobs {
-		if checkDomain(client, host, targetStatusCode, checkAlive, useBaseline, baselineThreshold) {
-			results <- host
+// Optimized HTTP client with connection pooling
+var httpClient = &http.Client{
+	Timeout: 5 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:    500,
+		MaxConnsPerHost: 5,
+		IdleConnTimeout: 5 * time.Second,
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 5 * time.Second,
+		}).DialContext,
+		DisableKeepAlives: false,
+	},
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if dropRedirects {
+			return http.ErrUseLastResponse // Prevents following redirects
 		}
-	}
+		return nil
+	},
 }
 
-// Check if a domain meets the criteria (alive, specific status code, or baseline similarity)
-func checkDomain(client *http.Client, host string, targetStatusCode int, checkAlive, useBaseline bool, baselineThreshold float64) bool {
+var dropRedirects bool
+
+// Fetch and evaluate a URL
+// Fetch and evaluate a URL
+func fetchURL(url string, results chan<- string, wg *sync.WaitGroup, semaphore chan struct{}, targetStatusCode int, checkAlive, useBaseline bool, baselineThreshold float64) {
+	defer wg.Done()
+	defer func() { <-semaphore }()
+
 	baseline := ""
 	if useBaseline {
-		baseline = getBaseline(client, host)
+		baseline = getBaseline(url)
 		if baseline == "" {
-			return false
+			return
 		}
 	}
 
 	for _, protocol := range []string{"http", "https"} {
-		resp, err := client.Get(fmt.Sprintf("%s://%s", protocol, host))
+		resp, err := httpClient.Get(fmt.Sprintf("%s://%s", protocol, url))
 		if err != nil {
-			fmt.Printf("Error fetching %s: %v\n", host, err)
+			fmt.Printf("Error fetching %s: %v\n", url, err)
 			continue
 		}
 		defer resp.Body.Close()
 
+		if dropRedirects && (resp.StatusCode >= 300 && resp.StatusCode < 400) {
+			fmt.Printf("Skipping redirect %s (%d)\n", url, resp.StatusCode)
+			return
+		}
+
 		if evaluateResponse(resp, baseline, targetStatusCode, checkAlive, useBaseline, baselineThreshold) {
-			return true
+			results <- url
+			return
 		}
 	}
-
-	return false
 }
 
-// Get the baseline content by appending a random string to the host
-func getBaseline(client *http.Client, host string) string {
-	randomString := randomString(12)
-	url := fmt.Sprintf("http://%s/%s", host, randomString)
-	resp, err := client.Get(url)
+// Generate baseline content for comparison
+func getBaseline(url string) string {
+	randomPath := randomString(12)
+	fullURL := fmt.Sprintf("http://%s?%s=%s", url, "dsda", randomPath)
+
+	resp, err := httpClient.Get(fullURL)
 	if err != nil {
-		fmt.Printf("Error fetching baseline for %s: %v\n", host, err)
+		fmt.Printf("Error fetching baseline for %s: %v\n", url, err)
 		return ""
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body) // Updated from ioutil.ReadAll to io.ReadAll
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Printf("Error reading baseline response for %s: %v\n", host, err)
+		fmt.Printf("Error reading baseline response for %s: %v\n", url, err)
 		return ""
 	}
 	return string(body)
 }
 
-// Evaluate the response against the criteria
+// Evaluate the response based on criteria
 func evaluateResponse(resp *http.Response, baseline string, targetStatusCode int, checkAlive, useBaseline bool, baselineThreshold float64) bool {
 	if checkAlive {
-		return true
+		return true // Return true for any valid response if checkAlive is enabled
 	}
+
 	if resp.StatusCode == targetStatusCode {
 		if useBaseline {
-			body, err := io.ReadAll(resp.Body) // Updated from ioutil.ReadAll to io.ReadAll
+			body, err := io.ReadAll(resp.Body)
 			if err != nil {
 				fmt.Printf("Error reading response body: %v\n", err)
 				return false
 			}
+			// Compare response content with the baseline
 			similarity := smetrics.JaroWinkler(baseline, string(body), 0.7, 4)
-			fmt.Printf("Similarity: %f\n", similarity)
+			fmt.Printf("Similarity: %f for %s\n", similarity, resp.Request.URL)
 			return similarity < baselineThreshold
 		}
-		return true
+		return true // If baseline isn't used, just check the status code
 	}
+
 	return false
+}
+
+// Utility function for absolute difference
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 // Generate a random alphanumeric string
@@ -105,37 +135,16 @@ func randomString(length int) string {
 	return string(b)
 }
 
-// Print a cool banner with tool details
-func printBanner() {
-	fmt.Println(`
-DomainSurvivor: Find the Domains that Survive the Test of Time!
-Effortlessly detect live domains with speed and precision.
-Created by Victor Security (https://victorsecurity.com.br)
-`)
-}
-
-// Print detailed usage information
-func printUsage() {
-	fmt.Println("Usage: DomainSurvivor [options]")
-	fmt.Println()
-	fmt.Println("Options:")
-	fmt.Println("  -l <file>         Input file containing a list of domains (one per line)")
-	fmt.Println("  -o <file>         Output file for domains matching criteria")
-	fmt.Println("  -t <number>       Number of concurrent workers (default: 100)")
-	fmt.Println("  -timeout <number> Timeout in seconds for each HTTP request (default: 5)")
-	fmt.Println("  -status <number>  HTTP status code to match (default: 200)")
-	fmt.Println("  -alive            Check for alive domains (any successful response)")
-	fmt.Println("  -baseline         Enable baseline comparison (default: false)")
-	fmt.Println("  -threshold <num>  Baseline similarity threshold (default: 0.9)")
-	fmt.Println("  -h, --help        Show this help message")
-	fmt.Println()
-	fmt.Println("Example:")
-	fmt.Println("  ./domainsurvivor -l domainlist.txt -o results.txt -t 200 -timeout 10 -status 404")
-	fmt.Println("  ./domainsurvivor -l domainlist.txt -o alivelist.txt -alive")
-	fmt.Println("  ./domainsurvivor -l domainlist.txt -o filtered.txt -baseline -threshold 0.85")
+func processBatch(batch []string, results chan<- string, wg *sync.WaitGroup, semaphore chan struct{}, targetStatusCode int, checkAlive, useBaseline bool, baselineThreshold float64) {
+	for _, url := range batch {
+		wg.Add(1)
+		semaphore <- struct{}{}
+		go fetchURL(url, results, wg, semaphore, targetStatusCode, checkAlive, useBaseline, baselineThreshold)
+	}
 }
 
 func main() {
+	// Command-line flags
 	// Command-line flags
 	inputFile := flag.String("l", "", "Input file containing a list of domains")
 	outputFile := flag.String("o", "", "Output file for domains matching criteria")
@@ -145,27 +154,27 @@ func main() {
 	checkAlive := flag.Bool("alive", false, "Check for alive domains (any successful response)")
 	useBaseline := flag.Bool("baseline", false, "Enable baseline comparison")
 	baselineThreshold := flag.Float64("threshold", 0.9, "Baseline similarity threshold")
+	dropRedirectsFlag := flag.Bool("drop-redirects", false, "Drop redirected responses")
 	showHelp := flag.Bool("h", false, "Show help message")
 	flag.Parse()
 
-	// If help is requested, print the banner and usage, then exit
 	if *showHelp || flag.NFlag() == 0 {
-		printBanner()
-		printUsage()
+		fmt.Println("Usage: [options]")
+		flag.PrintDefaults()
 		os.Exit(0)
 	}
 
-	// Validate flags
+	dropRedirects = *dropRedirectsFlag
+	httpClient.Timeout = time.Duration(*timeoutSeconds) * time.Second
+
 	if *inputFile == "" || *outputFile == "" {
 		fmt.Println("Error: Both input file (-l) and output file (-o) are required.")
-		fmt.Println("Use -h or --help for more information.")
 		os.Exit(1)
 	}
 
-	// Parse timeout as a duration
-	timeout := time.Duration(*timeoutSeconds) * time.Second
+	httpClient.Timeout = time.Duration(*timeoutSeconds) * time.Second
 
-	// Open the input file
+	// Open input and output files
 	file, err := os.Open(*inputFile)
 	if err != nil {
 		fmt.Printf("Error opening input file: %v\n", err)
@@ -173,7 +182,6 @@ func main() {
 	}
 	defer file.Close()
 
-	// Create the output file
 	output, err := os.Create(*outputFile)
 	if err != nil {
 		fmt.Printf("Error creating output file: %v\n", err)
@@ -181,46 +189,46 @@ func main() {
 	}
 	defer output.Close()
 
-	// Prepare channels
-	jobs := make(chan string)
 	results := make(chan string)
-
-	// Create worker pool
 	var wg sync.WaitGroup
-	for i := 0; i < *numWorkers; i++ {
-		wg.Add(1)
-		go worker(jobs, results, &wg, timeout, *targetStatusCode, *checkAlive, *useBaseline, *baselineThreshold)
-	}
+	semaphore := make(chan struct{}, *numWorkers)
 
-	// Start a goroutine to close the results channel after all workers are done
+	// Start result writer
 	go func() {
-		wg.Wait()
-		close(results)
+		for result := range results {
+			_, err := output.WriteString(result + "\n")
+			if err != nil {
+				fmt.Printf("Error writing to output file: %v\n", err)
+			}
+		}
 	}()
 
-	// Feed jobs to workers directly from the file
-	go func() {
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			jobs <- scanner.Text()
-		}
-		if err := scanner.Err(); err != nil {
-			fmt.Printf("Error reading input file: %v\n", err)
-		}
-		close(jobs)
-	}()
+	batchSize := 1000 // Adjust as needed
+	var batch []string
 
-	// Collect results
-	printBanner()
-	fmt.Println("Scanning started...")
-	fmt.Printf("Using %d workers with a timeout of %d seconds per request.\n", *numWorkers, *timeoutSeconds)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		batch = append(batch, scanner.Text())
 
-	for result := range results {
-		fmt.Printf("Match: %s\n", result)
-		if _, err := output.WriteString(result + "\n"); err != nil {
-			fmt.Printf("Error writing to output file: %v\n", err)
+		if len(batch) >= batchSize {
+			processBatch(batch, results, &wg, semaphore, *targetStatusCode, *checkAlive, *useBaseline, *baselineThreshold)
+			batch = nil // Free memory after processing
 		}
 	}
 
-	fmt.Println("Scanning completed. Results saved to", *outputFile)
+	// Process remaining batch if not empty
+	if len(batch) > 0 {
+		processBatch(batch, results, &wg, semaphore, *targetStatusCode, *checkAlive, *useBaseline, *baselineThreshold)
+	}
+
+	if err := scanner.Err(); err != nil {
+		fmt.Printf("Error reading input file: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Wait for all goroutines to finish
+	wg.Wait()
+	close(results)
+
+	fmt.Printf("Scanning completed. Results saved to %s\n", *outputFile)
 }
