@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,7 +14,6 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	"github.com/xrash/smetrics"
 )
 
 // Global variables.
@@ -125,17 +123,9 @@ func getCurrentIP(client *http.Client) (string, error) {
 
 // fetchURL fetches and evaluates a URL.
 func fetchURL(urlStr string, results chan<- string, wg *sync.WaitGroup, semaphore chan struct{},
-	targetStatusCode int, checkAlive, useBaseline bool, baselineThreshold float64) {
+	targetStatusCode int, checkAlive bool) {
 	defer wg.Done()
 	defer func() { <-semaphore }()
-
-	baseline := ""
-	if useBaseline {
-		baseline = getBaseline(urlStr)
-		if baseline == "" {
-			return
-		}
-	}
 
 	// Try both http and https.
 	for _, protocol := range []string{"http", "https"} {
@@ -162,77 +152,33 @@ func fetchURL(urlStr string, results chan<- string, wg *sync.WaitGroup, semaphor
 			return
 		}
 
-		if evaluateResponse(resp, baseline, targetStatusCode, checkAlive, useBaseline, baselineThreshold) {
+		if evaluateResponse(resp, targetStatusCode, checkAlive) {
 			results <- urlStr
 			return
 		}
 	}
 }
 
-// getBaseline generates baseline content for comparison.
-func getBaseline(urlStr string) string {
-	randomPath := randomString(12)
-	randomParam := randomString(6)
-	fullURL := fmt.Sprintf("http://%s?%s=%s", urlStr, randomParam, randomPath)
-
-	resp, err := httpClient.Get(fullURL)
-	if err != nil {
-		fmt.Printf("Error fetching baseline for %s: %v\n", urlStr, err)
-		return ""
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Printf("Error reading baseline response for %s: %v\n", urlStr, err)
-		return ""
-	}
-	return string(body)
-}
-
 // evaluateResponse checks if the HTTP response meets the desired criteria.
-func evaluateResponse(resp *http.Response, baseline string, targetStatusCode int,
-	checkAlive, useBaseline bool, baselineThreshold float64) bool {
+func evaluateResponse(resp *http.Response, targetStatusCode int, checkAlive bool) bool {
 	if checkAlive {
 		return true // Any valid response counts when checkAlive is enabled.
 	}
 
 	if resp.StatusCode == targetStatusCode {
-		if useBaseline {
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				fmt.Printf("Error reading response body: %v\n", err)
-				return false
-			}
-			// Compare response content with the baseline.
-			similarity := smetrics.JaroWinkler(baseline, string(body), 0.7, 4)
-			fmt.Printf("Similarity: %f for %s\n", similarity, resp.Request.URL)
-			return similarity < baselineThreshold
-		}
 		return true
 	}
 
 	return false
 }
 
-// randomString generates a random alphanumeric string.
-func randomString(length int) string {
-	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	seededRand := rand.New(rand.NewSource(time.Now().UnixNano()))
-	b := make([]byte, length)
-	for i := range b {
-		b[i] = charset[seededRand.Intn(len(charset))]
-	}
-	return string(b)
-}
-
 // processBatch processes a batch of URLs concurrently.
 func processBatch(batch []string, results chan<- string, wg *sync.WaitGroup, semaphore chan struct{},
-	targetStatusCode int, checkAlive, useBaseline bool, baselineThreshold float64) {
+	targetStatusCode int, checkAlive bool) {
 	for _, urlStr := range batch {
 		wg.Add(1)
 		semaphore <- struct{}{}
-		go fetchURL(urlStr, results, wg, semaphore, targetStatusCode, checkAlive, useBaseline, baselineThreshold)
+		go fetchURL(urlStr, results, wg, semaphore, targetStatusCode, checkAlive)
 	}
 }
 
@@ -244,8 +190,6 @@ func main() {
 	timeoutSeconds := flag.Int("timeout", 5, "Timeout in seconds for each HTTP request")
 	targetStatusCode := flag.Int("status", 200, "HTTP status code to match")
 	checkAlive := flag.Bool("alive", false, "Check for alive domains (any successful response)")
-	useBaseline := flag.Bool("baseline", false, "Enable baseline comparison")
-	baselineThreshold := flag.Float64("threshold", 0.9, "Baseline similarity threshold")
 	dropRedirectsFlag := flag.Bool("drop-redirects", false, "Drop redirected responses")
 	newConnectionFlag := flag.Bool("new_connection", false, "Create a new HTTP connection for each host to allow IP rotation")
 	logFetchIPFlag := flag.Bool("log_fetch_ip", false, "Log the IP used for each fetchURL request to verify IP rotation")
@@ -310,12 +254,12 @@ func main() {
 	for scanner.Scan() {
 		batch = append(batch, scanner.Text())
 		if len(batch) >= batchSize {
-			processBatch(batch, results, &wg, semaphore, *targetStatusCode, *checkAlive, *useBaseline, *baselineThreshold)
+			processBatch(batch, results, &wg, semaphore, *targetStatusCode, *checkAlive)
 			batch = nil // free memory after processing
 		}
 	}
 	if len(batch) > 0 {
-		processBatch(batch, results, &wg, semaphore, *targetStatusCode, *checkAlive, *useBaseline, *baselineThreshold)
+		processBatch(batch, results, &wg, semaphore, *targetStatusCode, *checkAlive)
 	}
 	if err := scanner.Err(); err != nil {
 		fmt.Printf("Error reading input file: %v\n", err)

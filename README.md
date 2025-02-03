@@ -1,6 +1,6 @@
 # DomainSurvivor
 
-**DomainSurvivor** is a fast, multithreaded domain scanner that identifies live domains. It can check for alive domains, match specific HTTP status codes, and compare response similarity against a baseline for added filtering precision.
+**DomainSurvivor** is a fast, multithreaded domain scanner that identifies live domains. It checks for alive domains, matches specific HTTP status codes, and supports proxy rotation for improved anonymity.
 
 Pair it with the **[RoundRobinizer](https://github.com/Victor-Security/RoundRobinizer)** script for balanced domain inputs and optimal scanning results.
 
@@ -10,9 +10,11 @@ Pair it with the **[RoundRobinizer](https://github.com/Victor-Security/RoundRobi
 
 - **Fast and Efficient**: Uses multithreading for concurrent scanning.
 - **Customizable**: Adjust the number of workers, timeout, and response evaluation criteria via command-line options.
+- **Proxy Support**: Supports rotating proxies configured via a `.env` file.
 - **Baseline Comparison**: Optionally compare responses to a baseline to filter false positives.
 - **Flexible**: Supports detection of live domains or domains matching specific HTTP status codes.
 - **Detailed Output**: Logs domains that meet the specified criteria to an output file.
+- **Drop Redirects**: Optionally prevent following redirects for more precise results.
 
 ---
 
@@ -52,9 +54,22 @@ Pair it with the **[RoundRobinizer](https://github.com/Victor-Security/RoundRobi
 - `-timeout <number>`: Timeout in seconds for each HTTP request (default: 5).
 - `-status <number>`: HTTP status code to match (default: 200).
 - `-alive`: Check for alive domains (any successful response).
-- `-baseline`: Enable baseline comparison to filter false positives.
-- `-threshold <num>`: Baseline similarity threshold (default: 0.9).
+- `-drop-redirects`: Drop redirected responses.
+- `-new_connection`: Create a new HTTP connection for each request (useful for proxy rotation).
+- `-log_fetch_ip`: Log the IP used for each request to verify IP rotation.
 - `-h, --help`: Show the help message and exit.
+
+### Proxy Configuration
+
+Proxies can be set up using a `.env` file with the following format:
+
+```
+PROXY_ADDRESSES=dc.oxylabs.io:8001,dc.oxylabs.io:8002
+PROXY_USERNAME=username
+PROXY_PASSWORD=password
+```
+
+If no proxies are configured, DomainSurvivor will make direct connections.
 
 ### Examples
 
@@ -68,9 +83,9 @@ Pair it with the **[RoundRobinizer](https://github.com/Victor-Security/RoundRobi
    ./DomainSurvivor -l domainlist.txt -o alivelist.txt -alive
    ```
 
-3. **Use Baseline Comparison**
+3. **Use Proxy Rotation**
    ```bash
-   ./DomainSurvivor -l domainlist.txt -o filtered.txt -baseline -threshold 0.85
+   ./DomainSurvivor -l domainlist.txt -o results.txt -new_connection -log_fetch_ip
    ```
 
 ---
@@ -119,8 +134,8 @@ google.com
 2. **Optimize Worker Count**:  
    Adjust the `-t` flag (number of workers) based on your system’s capabilities for optimal performance.
 
-3. **Leverage Baseline Comparison**:  
-   Use the `-baseline` option to filter false positives when scanning large datasets.
+3. **Leverage Proxy Rotation**:  
+   Use the `.env` proxy configuration along with `-new_connection` for rotating IPs dynamically.
 
 4. **Adjust Timeout**:  
    Use the `-timeout` flag to handle slow or distant servers.
